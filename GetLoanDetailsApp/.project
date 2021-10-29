@@ -1,11 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
-	<name>FXRateCheck</name>
+	<name>GetLoanDetailsApp</name>
 	<comment></comment>
 	<projects>
 		<project>CommonEsql</project>
 		<project>ExceptionHandling</project>
-		<project>T24WSDL</project>
 	</projects>
 	<buildSpec>
 		<buildCommand>

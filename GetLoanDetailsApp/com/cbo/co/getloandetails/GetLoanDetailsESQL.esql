@@ -1,0 +1,297 @@
+
+/*
+Author : Shankar Anumala
+Date of Creation: 19-05-2021
+Date of Modification: 07-07-2021
+Application Name : Get Loan Details.
+Description :
+1) From HTTP router we get the JSON data, here we are generating request to T24 URL in Soap.
+2) Audit Logging and DB Logging has been done here.
+3) After Successful or Unsuccessful response from T24 in Soap, we Audit the responses and send Json data to the Front end via Outgoing Http Router.
+*/
+BROKER SCHEMA com.cbo.co.getloandetails
+PATH com.cbo.co.common.esql;
+
+DECLARE LOG_CONFIG_PATH, RAW_AUDIT_Q, ERR_AUDIT_Q, EXCEPTION_Q, LOG4J_INIT_ERROR_MSG, ALL_CBO_HTTP_RES, BackendURL, IsLogRequired EXTERNAL CHARACTER;
+DECLARE tws NAMESPACE 'http://temenos.com/MMT';
+DECLARE soapenv NAMESPACE '';
+CREATE COMPUTE MODULE GetLoanDetailsFlow_GenerateReqToT24
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		SET Environment.Variables.Properties = InputRoot.Properties;
+		SET Environment.Variables.MQMD = InputRoot.MQMD;
+		CALL GenerateReqToT24();
+		RETURN TRUE;
+	END;
+	CREATE PROCEDURE GenerateReqToT24() BEGIN
+		SET Environment.MQRFH2= InputRoot.MQRFH2;
+		DECLARE ccsid, encodeRef, I INTEGER;
+		DECLARE rc BOOLEAN FALSE;
+		SET ccsid = InputRoot.Properties.CodedCharSetId;
+		SET encodeRef = InputRoot.Properties.Encoding;
+		DECLARE inRef REFERENCE TO InputRoot.JSON.Data.GetLoanDetailsRequest ;
+		SET Environment.Variables.reqMsg = getPayLoad(FIELDNAME(InputBody),InputRoot.JSON,encodeRef,ccsid);
+
+		DECLARE outRefer REFERENCE TO OutputRoot;
+		/* =================== CALLING LOG4J LOGGING ==============*/
+		CALL initLog4j(LOG_CONFIG_PATH) INTO rc;
+		IF ( rc = FALSE ) THEN
+			SET Environment.Variables.Log4j.ErrorMsg = LOG4J_INIT_ERROR_MSG;
+		END IF;
+
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','========================================================================') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','..............Start Channel Request logging...........') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','Channel Request::') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG',Environment.Variables.reqMsg) INTO rc;
+		/* ========================== FIELD TO FIELD MAPPING =============================================== */
+		CREATE LASTCHILD OF OutputRoot DOMAIN 'SOAP';
+		DECLARE outRefSoap REFERENCE TO OutputRoot.SOAP;
+
+		SET I = 1;
+		DECLARE inrefData REFERENCE TO InputRoot.JSON.Data.GetLoanDetailsRequest.GETLOANDETAILSType.Item[>];
+		SET outRefSoap.Context.Namespace.soapenv = 'http://schemas.xmlsoap.org/soap/envelope/';
+		SET outRefSoap.Context.Namespace.tws = 'http://temenos.com/MMT';
+		SET outRefSoap.Context.XmlRoot.Envelope.Header = '';
+		SET outRefSoap.Context.XmlRoot.Envelope.Body = '';
+		SET outRefSoap.Header = '';
+		SET outRefSoap.Body.tws:GETLOANDETAILS.WebRequestCommon.company = inRef.WebRequestCommon.company;
+		SET outRefSoap.Body.tws:GETLOANDETAILS.WebRequestCommon.password = Environment.MQRFH2.passWord;
+		SET outRefSoap.Body.tws:GETLOANDETAILS.WebRequestCommon.userName = Environment.MQRFH2.userName;
+		DECLARE outDataRef REFERENCE TO OutputRoot.SOAP.Body.tws:GETLOANDETAILS.GETLOANDETAILSType;
+		WHILE LASTMOVE(inrefData) DO
+			CREATE LASTCHILD OF OutputRoot.SOAP.Body.tws:GETLOANDETAILS.GETLOANDETAILSType AS outDataRef NAME 'enquiryInputCollection' ;
+			SET outDataRef.columnName = inrefData.columnName ;
+			SET outDataRef.criteriaValue = inrefData.criteriaValue ;
+			SET outDataRef.operand = inrefData.operand ;
+			MOVE inrefData NEXTSIBLING;
+		END WHILE;
+		DECLARE OutRefer REFERENCE TO OutputRoot.SOAP;
+		DECLARE envref REFERENCE TO Environment.SOAP;
+		CREATE LASTCHILD OF Environment AS envref DOMAIN 'SOAP';
+		SET envref = OutRefer;
+		SET Environment.reqMsgT24 = getPayLoad(FIELDNAME(OutRefer),OutRefer,encodeRef,ccsid);
+		SET OutputRoot = NULL;
+		/* =================== CALLING LOG4J LOGGING ENDING ==============*/
+		/* =================== CALLING DB RAW AUDIT LOGGING ==============*/
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','..............Start T24 Request logging...........') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','T24 Request::') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG',Environment.reqMsgT24) INTO rc;
+		SET OutputRoot.Properties = InputRoot.Properties;
+		IF IsLogRequired LIKE 'Y' THEN
+			CALL DBLogging(Environment.MQRFH2.ESBHeader.Message_Id,Environment.reqMsgT24,'T24 Request',ApplicationLabel,BrokerName,Environment.MQRFH2.usr.dbLogTime,Environment.MQRFH2.usr.dbLogDate,'',outRefer);
+			SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = RAW_AUDIT_Q;
+			PROPAGATE TO TERMINAL 'out1';
+		END IF;
+		/* =================== CALLING DB RAW AUDIT LOGGING ENDING ==============*/
+
+		SET OutputRoot = NULL;
+		SET OutputRoot.Properties = InputRoot.Properties;
+		SET OutputRoot.SOAP = envref;
+		SET OutputLocalEnvironment.Destination.SOAP.Request.Transport.HTTP.WebServiceURL = BackendURL;
+	END;
+END MODULE;
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+CREATE COMPUTE MODULE GetLoanDetailsFlow_GenerateResToChannel
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		CALL GenerateResToChannel();
+		RETURN FALSE;
+	END;
+	CREATE PROCEDURE GenerateResToChannel() BEGIN
+		DECLARE ccsid, encodeRef INTEGER;
+		DECLARE t24Res, t24ResStatus, resCode CHARACTER;
+
+		SET encodeRef = InputRoot.Properties.Encoding ;
+		SET ccsid = InputRoot.Properties.CodedCharSetId ;
+		DECLARE rc BOOLEAN FALSE;
+		/* =================== CALLING LOG4J LOGGING ==============*/
+		CALL initLog4j(LOG_CONFIG_PATH) INTO rc;
+		IF ( rc = FALSE ) THEN
+			SET Environment.Variables.Log4j.ErrorMsg = LOG4J_INIT_ERROR_MSG;
+		END IF;
+
+		SET resCode = InputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Code" ;
+		DECLARE inSoapRef REFERENCE TO InputRoot.SOAP ;
+		SET t24Res = getPayLoad(FIELDNAME(InputBody),inSoapRef,encodeRef,ccsid);
+		DECLARE statusRef REFERENCE TO InputRoot.SOAP.Body.*:GETLOANDETAILSResponse.Status ;
+		SET t24ResStatus = statusRef.successIndicator ;
+		SET OutputRoot.Properties = InputRoot.Properties;
+		/*============= Based on the response code will propagate to channel===============*/
+		DECLARE outDBRef REFERENCE TO OutputRoot ;
+
+		IF IsLogRequired LIKE 'Y' THEN
+			CALL DBLogging(Environment.MQRFH2.ESBHeader.Message_Id,t24Res,'T24 Response',ApplicationLabel,BrokerName,Environment.MQRFH2.usr.dbLogTime,Environment.MQRFH2.usr.dbLogDate,'',outDBRef);
+			SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = RAW_AUDIT_Q;
+			PROPAGATE TO TERMINAL 'out';
+		END IF;
+		--End of DB Logging
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','.............. GetLoanDetails T24 Response Logging..........') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','T24 Response::'||t24Res) INTO rc;
+		--End of Log4j Logging
+
+		SET OutputRoot = NULL;
+		SET OutputRoot.Properties = InputRoot.Properties ;
+		SET OutputRoot.MQRFH2 = Environment.MQRFH2 ;
+		-- ************* Framing Channel Response *******************--
+		CASE
+		WHEN resCode LIKE '200' AND t24ResStatus LIKE 'Success' THEN
+
+			IF (statusRef.messages NOT LIKE '') THEN
+				CREATE LASTCHILD OF OutputRoot DOMAIN ('JSON');
+				CREATE LASTCHILD OF OutputRoot.JSON NAME ('Data');
+				CREATE LASTCHILD OF OutputRoot.JSON.Data NAME ('GetLoanDetailsResponse');
+				CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBHeader');
+				CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBStatus');
+				DECLARE headerRef REFERENCE TO OutputRoot.JSON.Data.*.ESBHeader;
+				DECLARE errorRef REFERENCE TO OutputRoot.JSON.Data.*.ESBStatus;
+				SET headerRef = Environment.MQRFH2.ESBHeader ;
+				SET errorRef.Status = 'Failure';
+				SET errorRef.responseCode = 'ESB_BRK_'||resCode ;
+				SET errorRef.errorType = 'Functional Error' ;
+				DECLARE messageRef REFERENCE TO InputRoot.SOAP.Body.tws:GETLOANDETAILSResponse.Status.messages;
+				CREATE FIELD errorRef.errorDescription IDENTITY(JSON.Array)errorDescription;
+				DECLARE outErrMsgRef REFERENCE TO errorRef.errorDescription;
+				WHILE LASTMOVE(messageRef) DO
+					CREATE LASTCHILD OF errorRef.errorDescription AS outErrMsgRef NAME 'errorDescription' ;
+					SET outErrMsgRef = messageRef ;
+					MOVE messageRef NEXTSIBLING ;
+				END WHILE;
+
+			ELSE
+				CREATE LASTCHILD OF OutputRoot DOMAIN 'JSON';
+				CREATE LASTCHILD OF OutputRoot.JSON NAME 'Data';
+				CREATE LASTCHILD OF OutputRoot.JSON.Data NAME ('GetLoanDetailsResponse');
+				DECLARE outRef REFERENCE TO OutputRoot.JSON.Data.GetLoanDetailsResponse ;
+				CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBHeader');
+				DECLARE headerRef REFERENCE TO OutputRoot.JSON.Data.*.ESBHeader;
+				SET headerRef = Environment.MQRFH2.ESBHeader ;
+				SET outRef.Status = statusRef ;
+				DECLARE inDataRef REFERENCE TO InputRoot.SOAP.Body.tws:GETLOANDETAILSResponse.GETLOANDETAILSType[>] ;
+				CREATE FIELD OutputRoot.JSON.Data.*.GETLOANDETAILSResponse.GETLOANDETAILSType IDENTITY(JSON.Array)GETLOANDETAILSType ;
+				DECLARE outDataRef REFERENCE TO OutputRoot.JSON.Data.*.GETLOANDETAILSResponse.GETLOANDETAILSType ;
+				WHILE LASTMOVE(inDataRef) DO
+					CREATE LASTCHILD OF OutputRoot.JSON.Data.*.GETLOANDETAILSResponse.GETLOANDETAILSType AS outDataRef NAME 'GETLOANDETAILSType' ;
+					SET outDataRef = inDataRef ;
+					MOVE inDataRef NEXTSIBLING ;
+				END WHILE;
+				CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME 'ESBStatus';
+				SET outRef.ESBStatus.Status = 'Success';
+				SET outRef.ESBStatus.responseCode = 'ESB_BRK_000';
+			END IF;
+		WHEN resCode LIKE '200' AND t24ResStatus NOT LIKE 'Success' THEN
+			CREATE LASTCHILD OF OutputRoot DOMAIN ('JSON');
+			CREATE LASTCHILD OF OutputRoot.JSON NAME ('Data');
+			CREATE LASTCHILD OF OutputRoot.JSON.Data NAME ('GetLoanDetailsResponse');
+			CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBHeader');
+			CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBStatus');
+			DECLARE headerRef REFERENCE TO OutputRoot.JSON.Data.*.ESBHeader;
+			DECLARE errorRef REFERENCE TO OutputRoot.JSON.Data.*.ESBStatus;
+			SET headerRef = Environment.MQRFH2.ESBHeader ;
+			SET errorRef.Status = 'Failure';
+			SET errorRef.responseCode = 'ESB_BRK_'||resCode ;
+			SET errorRef.errorType = statusRef.successIndicator ;
+			DECLARE messageRef REFERENCE TO InputRoot.SOAP.Body.tws:GETLOANDETAILSResponse.Status.messages;
+			CREATE FIELD errorRef.errorDescription IDENTITY(JSON.Array)errorDescription;
+			DECLARE outErrMsgRef REFERENCE TO errorRef.errorDescription;
+			WHILE LASTMOVE(messageRef) DO
+				CREATE LASTCHILD OF errorRef.errorDescription AS outErrMsgRef NAME 'errorDescription' ;
+				SET outErrMsgRef = messageRef ;
+				MOVE messageRef NEXTSIBLING ;
+			END WHILE;
+		ELSE
+			CREATE LASTCHILD OF OutputRoot DOMAIN ('JSON');
+			CREATE LASTCHILD OF OutputRoot.JSON NAME ('Data');
+			CREATE LASTCHILD OF OutputRoot.JSON.Data NAME ('GetLoanDetailsResponse');
+			CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBHeader');
+			CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBStatus');
+			DECLARE headerRef REFERENCE TO OutputRoot.JSON.Data.*.ESBHeader;
+			DECLARE errorRef REFERENCE TO OutputRoot.JSON.Data.*.ESBStatus;
+			SET headerRef = Environment.MQRFH2.ESBHeader ;
+			SET errorRef.Status = 'Failure';
+			SET errorRef.responseCode = 'ESB_BRK_'||resCode ;
+			SET errorRef.errorType = statusRef.successIndicator ;
+			SET errorRef.errorDescription = 'No response form T24' ;
+		END CASE;
+
+		SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = ALL_CBO_HTTP_RES;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','.............. Get Loan Details T24 Response Routing to Channel..........') INTO rc;
+		PROPAGATE TO TERMINAL 'out' DELETE NONE;
+
+		DECLARE OutRefer REFERENCE TO OutputRoot.JSON;
+		SET Environment.resMsgChannel = getPayLoad(FIELDNAME(OutRefer),OutRefer,encodeRef,ccsid);
+		-- SET OutputRoot = NULL;
+		/* =================== CALLING LOG4J LOGGING ENDING ==============*/
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','..............Start Channel Response logging...........') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG','Channel Response::') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'GetLoanDetails', 'DEBUG',Environment.resMsgChannel) INTO rc;
+
+	END;
+END MODULE;
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+CREATE COMPUTE MODULE GetLoanDetailsFlow_ExceptionPropagation
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		CALL BuildException();
+		RETURN TRUE;
+	END;
+	CREATE PROCEDURE BuildException() BEGIN
+		DECLARE rc BOOLEAN FALSE;
+		CALL initLog4j(LOG_CONFIG_PATH) INTO rc;
+		IF ( rc = FALSE ) THEN
+			SET Environment.Variables.Log4j.ErrorMsg = LOG4J_INIT_ERROR_MSG;
+		END IF;
+		DECLARE excpRef REFERENCE TO InputRoot.XMLNSC.ExceptionDetails;
+		DECLARE errMsg CHARACTER;
+		IF CONTAINS(excpRef.excpText,'connection refused') OR CONTAINS(excpRef.excpText,'SocketTimeoutException')OR CONTAINS(excpRef.excpText,'SocketException') THEN
+			SET errMsg = 'Backend Host Timeout';
+		END IF;
+		SET OutputRoot.Properties = InputRoot.Properties;
+		SET OutputRoot.MQRFH2 = InputRoot.MQRFH2;
+		DECLARE outRefer REFERENCE TO OutputRoot;
+		DECLARE encodeRef REFERENCE TO Environment.Variables.Properties.Encoding;
+		DECLARE ccidRef REFERENCE TO Environment.Variables.Properties.CodedCharSetId;
+		DECLARE domainName CHARACTER FIELDNAME(InputBody);
+		DECLARE inRef REFERENCE TO InputRoot.XMLNSC;
+		CREATE LASTCHILD OF OutputRoot DOMAIN 'XMLNSC';
+		CREATE LASTCHILD OF OutputRoot.XMLNSC NAME 'GetLoanDetailsResponse';
+		DECLARE outRef REFERENCE TO OutputRoot.XMLNSC.*;
+		CALL BuildExceptionDetails(excpRef,outRef,'GetLoanDetailsResponse');
+		SET Environment.Variables.UserDefinedErrorCodes = OutputRoot.XMLNSC;
+		DECLARE domainDataRef REFERENCE TO OutputRoot.XMLNSC;
+		DECLARE exe_Desc CHARACTER getPayLoad(domainName,domainDataRef,encodeRef,ccidRef);
+		SET OutputRoot.XMLNSC = NULL;
+		CREATE LASTCHILD OF OutputRoot DOMAIN ('JSON');
+		CREATE LASTCHILD OF OutputRoot.JSON NAME ('Data');
+		CREATE LASTCHILD OF OutputRoot.JSON.Data NAME ('GetLoanDetailsResponse');
+		CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBHeader');
+		CREATE LASTCHILD OF OutputRoot.JSON.Data.* NAME ('ESBStatus');
+		DECLARE headerRef REFERENCE TO OutputRoot.JSON.Data.*.ESBHeader;
+		DECLARE errorRef REFERENCE TO OutputRoot.JSON.Data.*.ESBStatus;
+		SET headerRef.channel = Environment.MQRFH2.ESBHeader ;
+		SET errorRef.Status = 'Failure';
+		SET errorRef.responseCode = Environment.Variables.UserDefinedErrorCodes.GetLoanDetailsResponse.ErrorCode;
+		SET errorRef.errorType = Environment.Variables.UserDefinedErrorCodes.GetLoanDetailsResponse.ErrorType;
+		IF errMsg IS NOT NULL THEN
+			SET errorRef.errorDescription = errMsg ;
+		ELSE
+			SET errorRef.errorDescription = COALESCE(Environment.Variables.UserDefinedErrorCodes.GetLoanDetailsResponse.ActualDesc,'');
+		END IF;
+		MOVE domainDataRef TO OutputRoot.JSON;
+		SET Environment.Variables.resMsg = getPayload('JSON',domainDataRef,encodeRef,ccidRef);
+		SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = ALL_CBO_HTTP_RES;
+		PROPAGATE TO TERMINAL 'out';
+		SET OutputRoot.XMLNSC = Environment.Variables.UserDefinedErrorCodes;
+		CALL writeToLogFile(MessageFlowLabel, 'ErrorLogger', 'DEBUG','..............Logging Exception ...........') INTO rc;
+		CALL writeToLogFile(MessageFlowLabel, 'ErrorLogger', 'ERROR','Application Built Exception:'||exe_Desc) INTO rc;
+		SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = EXCEPTION_Q;
+		PROPAGATE TO TERMINAL 'out';
+		------------Error Logging in DB----------
+		CALL Error_DBLogging(Environment.MQRFH2.ESBHeader.Message_Id,Environment.Variables.reqMsg,'Application Error',ApplicationLabel,BrokerName,exe_Desc,Environment.MQRFH2.usr.dbLogTime,Environment.MQRFH2.usr.dbLogDate,'',CAST(excpRef.excpNumber AS CHARACTER),Environment.Variables.UserDefinedErrorCodes.GetLoanDetailsResponse.ErrorCode,outRefer);
+		CALL writeToLogFile(MessageFlowLabel, 'ErrorLogger', 'ERROR','Exception Created:'||exe_Desc) INTO rc;
+		SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = ERR_AUDIT_Q;
+	END;
+
+END MODULE;
